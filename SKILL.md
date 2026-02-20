@@ -31,9 +31,9 @@ When this skill is invoked, the agent must:
 ### 1. Configuration & Directory Check
 **Agent Instruction:**
 1.  **Detect Operating System:**
-    -   Determine the current OS (macOS, Windows, or Linux).
+    -   Determine the current OS (macOS, Windows).
     -   Set base paths accordingly:
-        -   **macOS/Linux:** `OUTPUT_DIR = ~/Documents/X_Briefings/`, `CONFIG_DIR = ~/.accomplish/x-briefing/`
+        -   **macOS:** `OUTPUT_DIR = ~/Documents/X_Briefings/`, `CONFIG_DIR = ~/.accomplish/x-briefing/`
         -   **Windows:** `OUTPUT_DIR = %USERPROFILE%\Documents\X_Briefings\`, `CONFIG_DIR = %USERPROFILE%\.accomplish\x-briefing\`
 2.  **Check Config:** Look for config file at `{CONFIG_DIR}/config.json`.
     -   **Expected format:**
