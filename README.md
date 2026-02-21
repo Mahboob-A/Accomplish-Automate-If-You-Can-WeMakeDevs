@@ -140,7 +140,7 @@ On future runs, it's smarter:
 A markdown file that looks like this:
 
 ```markdown
-# X Bookmark Briefing - 2024-01-16 at 08:30
+# X Bookmark Briefing - 2026-02-20 at 08:30
 
 ## Summary
 - Total: 25 bookmarks
