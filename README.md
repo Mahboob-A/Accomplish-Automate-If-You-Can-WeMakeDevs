@@ -156,7 +156,7 @@ A markdown file that looks like this:
 
 ## Backend
 
-**John Doe** (2024-01-16): Great article about database indexing strategies...
+**Mahboob Alam** **(@iMahboob_A)** (2026-02-10): Great article about database indexing strategies...
 [Link](https://x.com/...)
 
 Action: Read this article and apply to your current project.
