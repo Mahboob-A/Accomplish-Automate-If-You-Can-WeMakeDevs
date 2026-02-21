@@ -31,9 +31,9 @@ When this skill is invoked, the agent must:
 ### 1. Configuration & Directory Check
 **Agent Instruction:**
 1.  **Detect Operating System:**
-    -   Determine the current OS (macOS, Windows).
+    -   Determine the current OS (macOS, Windows, or Linux).
     -   Set base paths accordingly:
-        -   **macOS:** `OUTPUT_DIR = ~/Documents/X_Briefings/`, `CONFIG_DIR = ~/.accomplish/x-briefing/`
+        -   **macOS/Linux:** `OUTPUT_DIR = ~/Documents/X_Briefings/`, `CONFIG_DIR = ~/.accomplish/x-briefing/`
         -   **Windows:** `OUTPUT_DIR = %USERPROFILE%\Documents\X_Briefings\`, `CONFIG_DIR = %USERPROFILE%\.accomplish\x-briefing\`
 2.  **Check Config:** Look for config file at `{CONFIG_DIR}/config.json`.
     -   **Expected format:**
@@ -60,19 +60,25 @@ When this skill is invoked, the agent must:
     -   Check if it exists. If not, create it.
 4.  **Load Checkpoint (Duplicate Prevention):**
     -   Check for `{CONFIG_DIR}/last_scrape.json`.
-    -   **If exists:** Read `lastScrapedIds` array, `lastScrapeDate`, and `lastScrapeTimestamp`.
-    -   **If missing:** Set `lastScrapedIds = []`, `lastScrapeDate = null`, `lastScrapeTimestamp = null` (first run).
+    -   **Expected format:**
+        ```json
+        {
+          "lastScrapedIds": ["link1", "link2", "link3", "link4", "link5"],
+          "lastScrapeDate": "YYYY-MM-DD",
+          "lastScrapeTimestamp": "YYYY-MM-DDTHH:MM:SSZ",
+          "totalScraped": 25
+        }
+        ```
+    -   **If exists:** Parse JSON and read `lastScrapedIds` array, `lastScrapeDate`, and `lastScrapeTimestamp`.
+    -   **If missing or invalid format:** Set `lastScrapedIds = []`, `lastScrapeDate = null`, `lastScrapeTimestamp = null` (first run).
     -   Store these values for use in Step 1.5 and Step 2.
 
 ### 1.5. Pre-flight Validation
 **Agent Instruction:**
-1.  **Verify Browser Automation:**
-    -   Check if browser automation is available (Accomplish app running).
-    -   If not available: Inform user *"Browser automation is not available. Please ensure the Accomplish app is running."* and stop.
-2.  **Validate Email Format:**
+1.  **Validate Email Format:**
     -   Check if `GMAIL_TO_EMAIL` is a valid email format (contains @ and domain).
     -   If invalid: Ask user to provide a valid email address.
-3.  **Check Scrape Frequency:**
+2.  **Check Scrape Frequency:**
     -   If `lastScrapeTimestamp` exists, calculate time difference from now.
     -   If less than 6 hours: Warn user *"Last scrape was {X} hours ago. Running too frequently may trigger rate limits. Continue anyway?"*
     -   If user says NO: Stop workflow.
@@ -106,131 +112,134 @@ When this skill is invoked, the agent must:
 
 **Scraper Script Logic:**
 ```javascript
-async function scrapeBookmarks(limit = 25, mode = "normal", lastScrapedIds = [], filterReplies = true) {
-  const tweets = [];
-  const seenIds = new Set();
-  const errors = [];
-  const filtered = { replies: 0, total: 0 };
-  let hitCheckpoint = false;
-  let checkpointId = null;
-  
-  const wait = (min, max) => new Promise(r => setTimeout(r, Math.floor(Math.random() * (max - min + 1)) + min));
-  
-  const simulateHumanInteraction = async () => {
-    const scrollAmount = Math.floor(Math.random() * 100) - 50;
-    window.scrollBy(0, scrollAmount);
+(async function() {
+  async function scrapeBookmarks(limit = 25, mode = "normal", lastScrapedIds = [], filterReplies = true) {
+    const tweets = [];
+    const seenIds = new Set();
+    const errors = [];
+    const filtered = { replies: 0, total: 0 };
+    let hitCheckpoint = false;
+    let checkpointId = null;
     
-    if (Math.random() > 0.7) await wait(500, 1500);
+    const wait = (min, max) => new Promise(r => setTimeout(r, Math.floor(Math.random() * (max - min + 1)) + min));
     
-    const elements = document.querySelectorAll('article');
-    if (elements.length > 0) {
-      const randomEl = elements[Math.floor(Math.random() * elements.length)];
-      randomEl.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-    }
-  };
-
-  const extractLinks = (article) => {
-    const links = [];
-    const linkElements = article.querySelectorAll('a[href^="http"]:not([href*="/status/"])');
-    linkElements.forEach(el => {
-      const href = el.href;
-      if (!href.includes('t.co') && !href.includes('twitter.com') && !href.includes('x.com')) {
-        links.push(href);
-      }
-    });
-    return links;
-  };
-
-  let noNewTweetsCount = 0;
-  let scrollAttempts = 0;
-  const maxScrollAttempts = mode === "extra_slow" ? 20 : 15;
-  
-  while (tweets.length < limit && noNewTweetsCount < 3 && scrollAttempts < maxScrollAttempts && !hitCheckpoint) {
-    const articles = document.querySelectorAll('article[data-testid="tweet"]');
-    let addedNew = false;
-
-    for (const article of articles) {
-      if (tweets.length >= limit || hitCheckpoint) break;
+    const simulateHumanInteraction = async () => {
+      const scrollAmount = Math.floor(Math.random() * 100) - 50;
+      window.scrollBy(0, scrollAmount);
       
-      try {
-        const textEl = article.querySelector('[data-testid="tweetText"]');
-        if (!textEl) continue;
-
-        const text = textEl.innerText;
-        const userEl = article.querySelector('[data-testid="User-Name"]');
-        const linkEl = article.querySelector('a[href*="/status/"]');
-        const timeEl = article.querySelector('time');
-        const link = linkEl ? linkEl.href : null;
-        
-        // Check if we hit a previously scraped tweet
-        if (link && lastScrapedIds.length > 0 && lastScrapedIds.includes(link)) {
-          hitCheckpoint = true;
-          checkpointId = link;
-          break;
-        }
-        
-        const isReply = text.includes("Replying to @"); 
-        let shouldKeep = true;
-
-        if (filterReplies && isReply) {
-          const keywords = ["http", "github", "resource", "hiring", "job", "guide", "learn", "tool", "ai", "platform", "check this", "read", "article", "blog", "tutorial", "course"];
-          const hasKeyword = keywords.some(k => text.toLowerCase().includes(k));
-          if (!hasKeyword) {
-            shouldKeep = false;
-            filtered.replies++;
-          }
-        }
-        
-        filtered.total++;
-
-        if (shouldKeep && link && !seenIds.has(link)) {
-           seenIds.add(link);
-           const externalLinks = extractLinks(article);
-           
-           tweets.push({
-             text: text,
-             author: userEl ? userEl.innerText.split('\n')[0] : "Unknown",
-             handle: userEl ? userEl.innerText.split('\n')[1] : "Unknown",
-             time: timeEl ? timeEl.getAttribute('datetime') : new Date().toISOString(),
-             link: link,
-             externalLinks: externalLinks,
-             isReply: isReply
-           });
-           addedNew = true;
-        }
-      } catch (e) { 
-        errors.push({ error: e.message, timestamp: new Date().toISOString() });
+      if (Math.random() > 0.7) await wait(500, 1500);
+      
+      const elements = document.querySelectorAll('article');
+      if (elements.length > 0) {
+        const randomEl = elements[Math.floor(Math.random() * elements.length)];
+        randomEl.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
       }
+    };
+
+    const extractLinks = (article) => {
+      const links = [];
+      const linkElements = article.querySelectorAll('a[href^="http"]:not([href*="/status/"])');
+      linkElements.forEach(el => {
+        const href = el.href;
+        if (!href.includes('t.co') && !href.includes('twitter.com') && !href.includes('x.com')) {
+          links.push(href);
+        }
+      });
+      return links;
+    };
+
+    let noNewTweetsCount = 0;
+    let scrollAttempts = 0;
+    const maxScrollAttempts = mode === "extra_slow" ? 20 : 15;
+    
+    while (tweets.length < limit && noNewTweetsCount < 3 && scrollAttempts < maxScrollAttempts && !hitCheckpoint) {
+      const articles = document.querySelectorAll('article[data-testid="tweet"]');
+      let addedNew = false;
+
+      for (const article of articles) {
+        if (tweets.length >= limit || hitCheckpoint) break;
+        
+        try {
+          const textEl = article.querySelector('[data-testid="tweetText"]');
+          if (!textEl) continue;
+
+          const text = textEl.innerText;
+          const userEl = article.querySelector('[data-testid="User-Name"]');
+          const linkEl = article.querySelector('a[href*="/status/"]');
+          const timeEl = article.querySelector('time');
+          const link = linkEl ? linkEl.href : null;
+          
+          // Check if we hit a previously scraped tweet
+          if (link && lastScrapedIds.length > 0 && lastScrapedIds.includes(link)) {
+            hitCheckpoint = true;
+            checkpointId = link;
+            break;
+          }
+          
+          const isReply = text.includes("Replying to @"); 
+          let shouldKeep = true;
+
+          if (filterReplies && isReply) {
+            const keywords = ["http", "github", "resource", "hiring", "job", "guide", "learn", "tool", "ai", "platform", "check this", "read", "article", "blog", "tutorial", "course"];
+            const hasKeyword = keywords.some(k => text.toLowerCase().includes(k));
+            if (!hasKeyword) {
+              shouldKeep = false;
+              filtered.replies++;
+            }
+          }
+          
+          filtered.total++;
+
+          if (shouldKeep && link && !seenIds.has(link)) {
+             seenIds.add(link);
+             const externalLinks = extractLinks(article);
+             
+             tweets.push({
+               text: text,
+               author: userEl ? userEl.innerText.split('\n')[0] : "Unknown",
+               handle: userEl ? userEl.innerText.split('\n')[1] : "Unknown",
+               time: timeEl ? timeEl.getAttribute('datetime') : new Date().toISOString(),
+               link: link,
+               externalLinks: externalLinks,
+               isReply: isReply
+             });
+             addedNew = true;
+          }
+        } catch (e) { 
+          errors.push({ error: e.message, timestamp: new Date().toISOString() });
+        }
+      }
+
+      if (hitCheckpoint) break;
+
+      if (!addedNew) noNewTweetsCount++;
+      else noNewTweetsCount = 0;
+
+      await simulateHumanInteraction();
+      
+      const scrollFactor = mode === "extra_slow" ? 0.4 : 0.7; 
+      window.scrollBy(0, window.innerHeight * (scrollFactor + Math.random() * 0.2));
+      
+      const waitTime = mode === "extra_slow" ? [3000, 6000] : [2000, 4000];
+      await wait(waitTime[0], waitTime[1]);
+      
+      scrollAttempts++;
     }
-
-    if (hitCheckpoint) break;
-
-    if (!addedNew) noNewTweetsCount++;
-    else noNewTweetsCount = 0;
-
-    await simulateHumanInteraction();
     
-    const scrollFactor = mode === "extra_slow" ? 0.4 : 0.7; 
-    window.scrollBy(0, window.innerHeight * (scrollFactor + Math.random() * 0.2));
-    
-    const waitTime = mode === "extra_slow" ? [3000, 6000] : [2000, 4000];
-    await wait(waitTime[0], waitTime[1]);
-    
-    scrollAttempts++;
+    return { 
+      count: tweets.length, 
+      tweets: tweets,
+      errors: errors.length > 0 ? errors : undefined,
+      reachedLimit: tweets.length >= limit,
+      hitCheckpoint: hitCheckpoint,
+      checkpointId: checkpointId,
+      filtered: filtered
+    };
   }
   
-  return { 
-    count: tweets.length, 
-    tweets: tweets,
-    errors: errors.length > 0 ? errors : undefined,
-    reachedLimit: tweets.length >= limit,
-    hitCheckpoint: hitCheckpoint,
-    checkpointId: checkpointId,
-    filtered: filtered
-  };
-}
-// agent will inject: return await scrapeBookmarks(SCRAPE_LIMIT, "normal", lastScrapedIds, FILTER_REPLIES);
-return await scrapeBookmarks(25, "normal", [], true); 
+  // Agent will inject parameters: return await scrapeBookmarks(SCRAPE_LIMIT, "normal", lastScrapedIds, FILTER_REPLIES);
+  return await scrapeBookmarks(25, "normal", [], true);
+})();
 ```
 
 ### 3. Analysis & Summarization
@@ -248,7 +257,14 @@ return await scrapeBookmarks(25, "normal", [], true);
 > {If lastScrapeDate exists: 'These are {count} new bookmarks since {lastScrapeDate}.'}
 > Group them into categories from config: {CATEGORIES}.
 > 
-> IMPORTANT: Start the report with this exact structure (NO EMOJIS):
+> **CRITICAL FORMATTING RULES:**
+> 
+> 1. Title MUST include timestamp: `# X Bookmark Briefing - {YYYY-MM-DD} at {HH:MM}`
+> 2. Summary section is MANDATORY with all statistics
+> 3. Author format MUST be: `### Author Name (@handle)`
+> 4. NO EMOJIS anywhere in the report
+> 
+> **EXACT STRUCTURE TO FOLLOW:**
 > 
 > # X Bookmark Briefing - {YYYY-MM-DD} at {HH:MM}
 > 
@@ -266,38 +282,63 @@ return await scrapeBookmarks(25, "normal", [], true);
 > ## {Category Name}
 > 
 > For each bookmark:
-> - Format: `**Author** (Date): Summary (30-50 words). [Link](url)`
-> - **Action Items:** Explicitly suggest next steps (e.g., 'Apply here', 'Clone this repo').
+> ### Author Name (@x_handle)
+> **Time:** {ISO timestamp}
+> **Link:** {tweet URL}
+> 
+> {Tweet content}
+> 
+> ---
+> 
+> **Action Items:** Suggest next steps (e.g., 'Read this article', 'Apply here', 'Clone this repo').
 > 
 > Output a clean and properly formatted Markdown report with NO EMOJIS."
 
 ### 4. File Generation
 **Agent Instruction:**
-1.  **Generate unique filename with timestamp:**
-    -   Format: `X_Briefing_YYYY-MM-DD_HHMM.md` (e.g., `X_Briefing_2026-02-20_0830.md`)
-    -   Use 24-hour format for time (HH:MM)
-    -   This prevents overwriting if multiple runs happen on the same day.
+1.  **CRITICAL - Generate unique filename with timestamp:**
+    -   **REQUIRED FORMAT:** `X_Briefing_YYYY-MM-DD_HHMM.md`
+    -   **EXAMPLE:** `X_Briefing_2026-02-20_0830.md`
+    -   Use 24-hour format for time (HHMM without colon)
+    -   **DO NOT use formats like:** `briefing_2026-02-20.md` or `X_Briefing_2026-02-20.md`
+    -   **MUST include underscore and 4-digit time:** `X_Briefing_YYYY-MM-DD_HHMM.md`
 2.  **Save File:** `{OUTPUT_DIR}/X_Briefing_YYYY-MM-DD_HHMM.md` (using OS-specific path from Step 1.1)
 3.  **Store the timestamp** for use in Step 6 (git commit and branch naming).
 
 ### 4.5. Save Checkpoint (Duplicate Prevention)
 **Agent Instruction:**
-1.  Extract the first 5 tweet links from the scraped results. If fewer than 5 bookmarks were scraped, use as many as available.
-2.  Create/update `{CONFIG_DIR}/last_scrape.json` (using OS-specific path from Step 1.1):
+1.  Extract **ONLY the first 5 tweet links** from the scraped results. If fewer than 5 bookmarks were scraped, use as many as available (but never more than 5).
+2.  **CRITICAL:** Create/update `{CONFIG_DIR}/last_scrape.json` (using OS-specific path from Step 1.1) with this EXACT structure:
     ```json
     {
       "lastScrapedIds": ["link1", "link2", "link3", "link4", "link5"],
       "lastScrapeDate": "YYYY-MM-DD",
       "lastScrapeTimestamp": "YYYY-MM-DDTHH:MM:SSZ",
-      "totalScraped": <count>
+      "totalScraped": 25
     }
     ```
+    **REQUIRED FIELDS - ALL MUST BE PRESENT:**
+    -   `lastScrapedIds`: Array of ONLY first 5 tweet links (use `tweets.slice(0, 5).map(t => t.link)`)
+    -   `lastScrapeDate`: Current date in YYYY-MM-DD format (e.g., "2024-01-16")
+    -   `lastScrapeTimestamp`: Current timestamp in ISO 8601 format (e.g., "2024-01-16T08:30:00Z")
+    -   `totalScraped`: Total number of bookmarks scraped in this run (integer)
+    
+    **DO NOT save as a plain array. It MUST be a JSON object with all 4 fields above.**
 3.  Ensure the directory `{CONFIG_DIR}` exists before writing.
 
 ### 5. Email Delivery
 **Agent Instruction:**
 1.  Use the email obtained from Step 1 (either from config file or user input).
-2.  Send the email via `/google-workspace` skill.
+2.  **Send the email using the `/google-workspace` skill:**
+    -   Open Gmail in the browser
+    -   Navigate to compose
+    -   Fill in recipient email
+    -   Subject: "X Bookmark Briefing - {YYYY-MM-DD}"
+    -   Body: Paste the markdown report content
+    -   Send the email
+3.  **If `/google-workspace` skill is not available or fails:**
+    -   Inform user: *"Email delivery requires the `/google-workspace` skill. The report has been saved to {OUTPUT_DIR}/X_Briefing_YYYY-MM-DD_HHMM.md"*
+    -   Continue to Step 6 (Git push)
 
 ### 6. Git & GitHub Automation
 **Agent Instruction:**
